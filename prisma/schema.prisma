@@ -1,0 +1,667 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MERCHANT
+  INFLUENCER
+}
+
+enum AccountStatus {
+  ACTIVE
+  BANNED
+  SUSPENDED
+}
+
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum MissionStatus {
+  DRAFT
+  PUBLISHED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  SUSPENDED
+}
+
+enum MissionApplicationStatus {
+  APPLIED
+  ACCEPTED
+  REJECTED
+}
+
+enum MissionSubmissionStatus {
+  SUBMITTED
+  APPROVED
+  REJECTED
+  RESUBMIT_REQUIRED
+}
+
+enum PricingMode {
+  COMMISSION_POOL
+  FIXED_BUDGET
+}
+
+enum WalletLedgerType {
+  TOPUP
+  CHARGE
+  REFUND
+  ADJUSTMENT
+}
+
+enum WalletLedgerDirection {
+  CREDIT
+  DEBIT
+}
+
+enum PointsLedgerType {
+  MISSION_EARNING
+  WITHDRAWAL_DEBIT
+  ADJUSTMENT
+}
+
+enum WithdrawalStatus {
+  PENDING
+  APPROVED
+  PAID
+  REJECTED
+}
+
+enum NotificationType {
+  APPLICATION
+  SUBMISSION
+  MISSION_STATUS
+  WITHDRAWAL
+  VERIFICATION
+  SYSTEM
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  REJECTED
+}
+
+enum RevenueTopupStatus {
+  PENDING
+  PAID
+  FAILED
+}
+
+enum MerchantLandingStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum CheckInTokenStatus {
+  ACTIVE
+  USED
+  EXPIRED
+  REVOKED
+}
+
+enum MerchantCheckInStatus {
+  CHECKED_IN
+  INVALID
+}
+
+enum MerchantProductStatus {
+  ACTIVE
+  DRAFT
+  ARCHIVED
+}
+
+enum CommerceOrderSource {
+  AFFILIATE_LINK
+  SELF_PURCHASE
+}
+
+enum CommerceOrderStatus {
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  FAILED
+}
+
+enum MerchantVoucherStatus {
+  READY
+  USED
+}
+
+model User {
+  id                String             @id @default(cuid())
+  role              Role
+  email             String             @unique
+  passwordHash      String
+  status            AccountStatus      @default(ACTIVE)
+  commercePreferences Json?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  merchantProfile   MerchantProfile?
+  influencerProfile InfluencerProfile?
+  refreshTokens     RefreshToken[]
+  notifications     Notification[]
+  sentMessages      ChatMessage[]      @relation("SentMessages")
+  disputesOpened    Dispute[]          @relation("DisputeOpenedBy")
+  adminAuditLogs    AuditLog[]         @relation("AdminActions")
+  commerceAddresses CommerceAddress[]
+  commerceOrders    CommerceOrder[]
+}
+
+model MerchantProfile {
+  id               String                  @id @default(cuid())
+  userId           String                  @unique
+  companyName      String
+  contactPerson    String
+  phone            String
+  email            String
+  address          String
+  logoUrl          String?
+  socials          Json?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  user             User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  missions         Mission[]
+  walletAccount    MerchantWalletAccount?
+  merchantLandings MerchantLanding[]
+  checkInRecords   MerchantCheckInRecord[]
+  products         MerchantProduct[]
+  vouchers         MerchantVoucher[]
+  commerceOrders   CommerceOrder[]
+
+  @@index([companyName])
+}
+
+model InfluencerProfile {
+  id                  String                  @id @default(cuid())
+  userId              String                  @unique
+  igLink              String
+  tiktokLink          String?
+  followerCount       Int
+  verificationStatus  VerificationStatus      @default(PENDING)
+  verificationNotes   String?
+  proofImageUrl       String
+  phone               String
+  phoneVerifiedAt     DateTime?
+  mediaKit            Json?
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+  user                User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  missionApplications MissionApplication[]
+  submissions         MissionSubmission[]
+  pointsAccount       PointsAccount?
+  reviewsReceived     Review[]
+  withdrawals         Withdrawal[]
+  merchantLandings    MerchantLanding[]
+  checkInRecords      MerchantCheckInRecord[]
+
+  @@index([verificationStatus])
+  @@index([followerCount])
+}
+
+model PhoneOtp {
+  id        String   @id @default(cuid())
+  phone     String
+  code      String
+  isUsed    Boolean  @default(false)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([phone, isUsed])
+}
+
+model Category {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  sortOrder Int       @default(0)
+  isEnabled Boolean   @default(true)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  missions  Mission[]
+
+  @@index([sortOrder])
+  @@index([isEnabled])
+}
+
+model Mission {
+  id                    String                  @id @default(cuid())
+  merchantProfileId     String
+  categoryId            String
+  title                 String
+  description           String
+  platformRequirements  Json
+  deliverablesChecklist Json
+  location              String?
+  deadline              DateTime
+  quota                 Int
+  pricingMode           PricingMode
+  commissionPoolAmount  Decimal?                @db.Decimal(12, 2)
+  fixedBudgetAmount     Decimal?                @db.Decimal(12, 2)
+  platformFeeAmount     Decimal                 @db.Decimal(12, 2)
+  totalChargeAmount     Decimal                 @db.Decimal(12, 2)
+  status                MissionStatus           @default(DRAFT)
+  suspendedReason       String?
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+  merchantProfile       MerchantProfile         @relation(fields: [merchantProfileId], references: [id], onDelete: Cascade)
+  category              Category                @relation(fields: [categoryId], references: [id])
+  applications          MissionApplication[]
+  submissions           MissionSubmission[]
+  reviews               Review[]
+  chats                 Chat[]
+  disputes              Dispute[]
+  merchantLandings      MerchantLanding[]
+  checkInRecords        MerchantCheckInRecord[]
+
+  @@index([merchantProfileId, status])
+  @@index([categoryId, status])
+  @@index([deadline])
+}
+
+model MissionApplication {
+  id              String                   @id @default(cuid())
+  missionId       String
+  influencerId    String
+  status          MissionApplicationStatus @default(APPLIED)
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+  mission         Mission                  @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  influencer      InfluencerProfile        @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+  submission      MissionSubmission?
+  chats           Chat[]
+  disputes        Dispute[]
+  merchantLanding MerchantLanding?
+  checkInRecord   MerchantCheckInRecord?
+
+  @@unique([missionId, influencerId])
+  @@index([influencerId, status])
+  @@index([missionId, status])
+}
+
+model MissionSubmission {
+  id            String                  @id @default(cuid())
+  missionId     String
+  applicationId String                  @unique
+  influencerId  String
+  proofImages   Json
+  proofLinks    Json
+  caption       String
+  status        MissionSubmissionStatus @default(SUBMITTED)
+  reviewNote    String?
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+  mission       Mission                 @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  application   MissionApplication      @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  influencer    InfluencerProfile       @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+  review        Review?
+
+  @@index([missionId, status])
+  @@index([influencerId, status])
+}
+
+model Review {
+  id           String            @id @default(cuid())
+  missionId    String
+  submissionId String            @unique
+  merchantId   String
+  influencerId String
+  star         Int
+  comment      String
+  createdAt    DateTime          @default(now())
+  mission      Mission           @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  submission   MissionSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  influencer   InfluencerProfile @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  @@index([missionId])
+  @@index([influencerId])
+}
+
+model MerchantWalletAccount {
+  id            String                 @id @default(cuid())
+  merchantId    String                 @unique
+  balance       Decimal                @default(0) @db.Decimal(12, 2)
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  merchant      MerchantProfile        @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  ledgerEntries MerchantWalletLedger[]
+}
+
+model MerchantWalletLedger {
+  id              String                @id @default(cuid())
+  walletAccountId String
+  amount          Decimal               @db.Decimal(12, 2)
+  direction       WalletLedgerDirection
+  type            WalletLedgerType
+  reference       String
+  notes           String?
+  createdAt       DateTime              @default(now())
+  walletAccount   MerchantWalletAccount @relation(fields: [walletAccountId], references: [id], onDelete: Cascade)
+
+  @@index([walletAccountId, createdAt])
+  @@index([reference])
+}
+
+model PointsAccount {
+  id            String            @id @default(cuid())
+  influencerId  String            @unique
+  balancePoints Int               @default(0)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  influencer    InfluencerProfile @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+  ledgerEntries PointsLedger[]
+}
+
+model PointsLedger {
+  id              String           @id @default(cuid())
+  pointsAccountId String
+  points          Int
+  type            PointsLedgerType
+  reference       String
+  notes           String?
+  createdAt       DateTime         @default(now())
+  pointsAccount   PointsAccount    @relation(fields: [pointsAccountId], references: [id], onDelete: Cascade)
+
+  @@index([pointsAccountId, createdAt])
+  @@index([reference])
+}
+
+model Withdrawal {
+  id           String            @id @default(cuid())
+  influencerId String
+  pointsUsed   Int
+  amountMYR    Decimal           @db.Decimal(12, 2)
+  status       WithdrawalStatus  @default(PENDING)
+  payoutRef    String?
+  adminNotes   String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  influencer   InfluencerProfile @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  @@index([influencerId, status])
+  @@index([status, createdAt])
+}
+
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  isRead    Boolean          @default(false)
+  metadata  Json?
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([createdAt])
+}
+
+model Chat {
+  id            String             @id @default(cuid())
+  missionId     String
+  applicationId String
+  merchantId    String
+  influencerId  String
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  mission       Mission            @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  application   MissionApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  messages      ChatMessage[]
+
+  @@unique([applicationId])
+  @@index([missionId])
+}
+
+model ChatMessage {
+  id          String   @id @default(cuid())
+  chatId      String
+  senderId    String
+  content     String
+  attachments Json?
+  createdAt   DateTime @default(now())
+  chat        Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender      User     @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, createdAt])
+}
+
+model Dispute {
+  id             String             @id @default(cuid())
+  missionId      String
+  applicationId  String
+  openedById     String
+  reason         String
+  details        String
+  status         DisputeStatus      @default(OPEN)
+  resolutionNote String?
+  resolvedById   String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  mission        Mission            @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  application    MissionApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  openedBy       User               @relation("DisputeOpenedBy", fields: [openedById], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([missionId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  adminId    String
+  action     String
+  entityType String
+  entityId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  admin      User     @relation("AdminActions", fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId, createdAt])
+  @@index([entityType, createdAt])
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+}
+
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model RevenueTopupIntent {
+  id              String             @id @default(cuid())
+  referenceId     String             @unique
+  merchantId      String
+  amount          Decimal            @db.Decimal(12, 2)
+  status          RevenueTopupStatus @default(PENDING)
+  paymentUrl      String
+  providerPayload Json?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@index([merchantId, status])
+}
+
+model MerchantLanding {
+  id             String                  @id @default(cuid())
+  slug           String                  @unique
+  missionId      String
+  applicationId  String                  @unique
+  merchantId     String
+  influencerId   String
+  status         MerchantLandingStatus   @default(ACTIVE)
+  sharedAt       DateTime?
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+  mission        Mission                 @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  application    MissionApplication      @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  merchant       MerchantProfile         @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  influencer     InfluencerProfile       @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+  qrTokens       MerchantCheckInToken[]
+  checkInRecords MerchantCheckInRecord[]
+
+  @@index([merchantId, status])
+  @@index([influencerId, status])
+  @@index([missionId, status])
+}
+
+model MerchantCheckInToken {
+  id            String                 @id @default(cuid())
+  landingId     String
+  tokenHash     String                 @unique
+  status        CheckInTokenStatus     @default(ACTIVE)
+  expiresAt     DateTime
+  consumedAt    DateTime?
+  consumedByIp  String?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  landing       MerchantLanding        @relation(fields: [landingId], references: [id], onDelete: Cascade)
+  checkInRecord MerchantCheckInRecord?
+
+  @@index([landingId, status, expiresAt])
+  @@index([expiresAt])
+}
+
+model MerchantCheckInRecord {
+  id            String                @id @default(cuid())
+  landingId     String
+  tokenId       String                @unique
+  missionId     String
+  applicationId String                @unique
+  merchantId    String
+  influencerId  String
+  status        MerchantCheckInStatus @default(CHECKED_IN)
+  checkedInAt   DateTime              @default(now())
+  createdAt     DateTime              @default(now())
+  landing       MerchantLanding       @relation(fields: [landingId], references: [id], onDelete: Cascade)
+  token         MerchantCheckInToken  @relation(fields: [tokenId], references: [id], onDelete: Restrict)
+  mission       Mission               @relation(fields: [missionId], references: [id], onDelete: Cascade)
+  application   MissionApplication    @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  merchant      MerchantProfile       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  influencer    InfluencerProfile     @relation(fields: [influencerId], references: [id], onDelete: Cascade)
+
+  @@index([influencerId, checkedInAt])
+  @@index([merchantId, checkedInAt])
+  @@index([missionId, checkedInAt])
+}
+
+model MerchantProduct {
+  id          String                @id @default(cuid())
+  merchantId  String
+  name        String
+  slug        String                @unique
+  sku         String
+  category    String
+  price       Decimal               @db.Decimal(12, 2)
+  stock       Int
+  status      MerchantProductStatus @default(DRAFT)
+  description String
+  imageUrl    String?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  merchant    MerchantProfile       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  orderItems  CommerceOrderItem[]
+
+  @@unique([merchantId, sku])
+  @@index([merchantId, status, updatedAt])
+  @@index([category, status])
+}
+
+model MerchantVoucher {
+  id            String                @id @default(cuid())
+  code          String                @unique
+  merchantId    String
+  title         String
+  productName   String
+  campaignName  String
+  status        MerchantVoucherStatus @default(READY)
+  referredBy    Json
+  redeemingUser Json
+  validUntil    DateTime
+  usedAt        DateTime?
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  merchant      MerchantProfile       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId, status, createdAt])
+}
+
+model CommerceAddress {
+  id            String   @id @default(cuid())
+  userId        String
+  label         String
+  recipientName String
+  phone         String
+  line1         String
+  line2         String?
+  city          String
+  state         String
+  postalCode    String
+  isDefault     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isDefault, updatedAt])
+}
+
+model CommerceOrder {
+  id              String              @id @default(cuid())
+  userId          String?
+  merchantId      String?
+  source          CommerceOrderSource
+  status          CommerceOrderStatus @default(PROCESSING)
+  subtotal        Decimal             @db.Decimal(12, 2)
+  shippingFee     Decimal             @db.Decimal(12, 2)
+  total           Decimal             @db.Decimal(12, 2)
+  buyerName       String
+  buyerPhone      String
+  buyerEmail      String
+  referrerId      String?
+  note            String?
+  addressSnapshot Json?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  user            User?               @relation(fields: [userId], references: [id], onDelete: SetNull)
+  merchant        MerchantProfile?    @relation(fields: [merchantId], references: [id], onDelete: SetNull)
+  items           CommerceOrderItem[]
+
+  @@index([userId, createdAt])
+  @@index([merchantId, createdAt])
+}
+
+model CommerceOrderItem {
+  id         String         @id @default(cuid())
+  orderId    String
+  productId  String?
+  title      String
+  imageUrl   String?
+  quantity   Int
+  unitPrice  Decimal        @db.Decimal(12, 2)
+  createdAt  DateTime       @default(now())
+  order      CommerceOrder  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product    MerchantProduct? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([productId])
+}
