@@ -1,5 +1,4 @@
 import { Request, Response } from 'express';
-import { prisma } from '../lib/prisma';
 import { env } from '../config/env';
 import { sendSuccess } from '../utils/response';
 import { AppError } from '../utils/app-error';
@@ -27,7 +26,8 @@ export const register = async (req: Request, res: Response) => {
     res,
     {
       accessToken: result.tokens.accessToken,
-      user: result.user
+      user: result.user,
+      onboardingBonus: result.onboardingBonus
     },
     201
   );
@@ -64,13 +64,7 @@ export const logout = async (req: Request, res: Response) => {
 
 export const me = async (req: AuthedRequest, res: Response) => {
   if (!req.user) throw new AppError('Unauthorized', 401);
-  const user = await prisma.user.findUnique({
-    where: { id: req.user.id },
-    include: {
-      merchantProfile: true,
-      influencerProfile: true
-    }
-  });
+  const user = await authService.getActorByRoleAndId(req.user.role, req.user.id);
 
   if (!user) throw new AppError('User not found', 404);
 

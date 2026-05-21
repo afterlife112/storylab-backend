@@ -14,7 +14,6 @@ const envSchema = z.object({
   FRONTEND_MERCHANT_ORIGIN: z.string().url(),
   FRONTEND_USER_ORIGIN: z.string().url(),
   FRONTEND_ADMIN_ORIGIN: z.string().url(),
-  MOCK_REVENUE_MONSTER: z.string().default('true'),
   REVENUE_MONSTER_WEBHOOK_SECRET: z.string().min(1),
   TIMEZONE: z.string().default('Asia/Kuala_Lumpur')
 });
@@ -26,6 +25,5 @@ if (!parsed.success) {
 }
 
 export const env = {
-  ...parsed.data,
-  MOCK_REVENUE_MONSTER: parsed.data.MOCK_REVENUE_MONSTER === 'true'
+  ...parsed.data
 };

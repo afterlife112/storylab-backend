@@ -79,8 +79,14 @@ export const moderateMission = async (req: AuthedRequest, res: Response) => {
 };
 
 export const listUsers = async (req: AuthedRequest, res: Response) => {
-  const { page, pageSize } = getPagination(req.query.page as string, req.query.pageSize as string);
-  return sendSuccess(res, await adminService.listUsers(page, pageSize, req.query.role as any));
+  const { page, pageSize } = getPagination(
+    req.query.page as string,
+    (req.query.pageSize as string) ?? (req.query.limit as string)
+  );
+  return sendSuccess(
+    res,
+    await adminService.listUsers(page, pageSize, req.query.role as any, (req.query.query as string) ?? (req.query.search as string))
+  );
 };
 
 export const updateUserStatus = async (req: AuthedRequest, res: Response) => {
@@ -119,6 +125,10 @@ export const listAuditLogs = async (req: AuthedRequest, res: Response) => {
   return sendSuccess(res, await adminService.listAuditLogs(page, pageSize));
 };
 
+export const listPointLogs = async (_req: AuthedRequest, res: Response) => {
+  return sendSuccess(res, await adminService.listPointLogs());
+};
+
 export const listDisputes = async (req: AuthedRequest, res: Response) => {
   const { page, pageSize } = getPagination(req.query.page as string, req.query.pageSize as string);
   return sendSuccess(res, await adminService.listDisputes(page, pageSize, req.query.status as any));
@@ -127,6 +137,6 @@ export const listDisputes = async (req: AuthedRequest, res: Response) => {
 export const resolveDispute = async (req: AuthedRequest, res: Response) => {
   if (!req.user) throw new AppError('Unauthorized', 401);
   const data = await adminService.resolveDispute(String(req.params.disputeId), req.body.status, req.body.resolutionNote, req.user.id);
-  await withAudit(req.user.id, 'DISPUTE_RESOLVE', 'DISPUTE', data.id, req.body);
+  await withAudit(req.user.id, 'DISPUTE_RESOLVE', 'DISPUTE', String(req.params.disputeId), req.body);
   return sendSuccess(res, data);
 };

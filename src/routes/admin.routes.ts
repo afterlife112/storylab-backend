@@ -1,4 +1,4 @@
-import { Role } from '@prisma/client';
+import { Roles } from '../constants/enums';
 import { Router } from 'express';
 import * as adminController from '../controllers/admin.controller';
 import { requireAuth } from '../middleware/require-auth';
@@ -8,7 +8,6 @@ import { asyncHandler } from '../utils/async-handler';
 import {
   categoryReorderSchema,
   categorySchema,
-  disputeResolveSchema,
   financeSettingsSchema,
   missionSuspendSchema,
   userBanSchema,
@@ -18,7 +17,7 @@ import { withdrawalStatusSchema } from '../validators/influencer.validator';
 
 const router = Router();
 
-router.use(requireAuth, requireRole([Role.ADMIN]));
+router.use(requireAuth, requireRole([Roles.ADMIN]));
 
 router.get('/dashboard', asyncHandler(adminController.dashboard));
 
@@ -42,9 +41,6 @@ router.patch('/finance/settings', validate(financeSettingsSchema), asyncHandler(
 router.get('/withdrawals', asyncHandler(adminController.listWithdrawals));
 router.patch('/withdrawals/:withdrawalId', validate(withdrawalStatusSchema), asyncHandler(adminController.updateWithdrawal));
 
-router.get('/audit-logs', asyncHandler(adminController.listAuditLogs));
-
-router.get('/disputes', asyncHandler(adminController.listDisputes));
-router.patch('/disputes/:disputeId', validate(disputeResolveSchema), asyncHandler(adminController.resolveDispute));
+router.get('/audit', asyncHandler(adminController.listPointLogs));
 
 export default router;

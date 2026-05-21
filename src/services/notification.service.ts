@@ -1,20 +1,12 @@
-import { NotificationType } from '@prisma/client';
-import { prisma } from '../lib/prisma';
+import { NotificationType } from '../constants/enums';
+import { AppError } from '../utils/app-error';
 
-export const createNotification = async (input: {
+export const createNotification = async (_input: {
   userId: string;
   type: NotificationType;
   title: string;
   message: string;
   metadata?: unknown;
 }) => {
-  return prisma.notification.create({
-    data: {
-      userId: input.userId,
-      type: input.type,
-      title: input.title,
-      message: input.message,
-      metadata: input.metadata as any
-    }
-  });
+  throw new AppError('Notifications are not supported by the current database schema', 501);
 };
