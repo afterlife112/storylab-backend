@@ -1,4 +1,4 @@
-import { Role } from '@prisma/client';
+import { Role } from '../constants/enums';
 import { NextFunction, Response } from 'express';
 import { AppError } from '../utils/app-error';
 import { AuthedRequest } from '../types';

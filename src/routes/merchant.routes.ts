@@ -1,4 +1,4 @@
-import { Role } from '@prisma/client';
+import { Roles } from '../constants/enums';
 import { Router } from 'express';
 import * as merchantController from '../controllers/merchant.controller';
 import { requireAuth } from '../middleware/require-auth';
@@ -15,12 +15,10 @@ import {
   topupSchema,
   updateMissionSchema
 } from '../validators/merchant.validator';
-import { messageSchema } from '../validators/common.validator';
-import { disputeCreateSchema } from '../validators/influencer.validator';
 
 const router = Router();
 
-router.use(requireAuth, requireRole([Role.MERCHANT]));
+router.use(requireAuth, requireRole([Roles.MERCHANT]));
 
 router.get('/profile', asyncHandler(merchantController.getProfile));
 router.put('/profile', validate(merchantProfileSchema), asyncHandler(merchantController.updateProfile));
@@ -43,20 +41,10 @@ router.get('/missions/:missionId/submissions', asyncHandler(merchantController.l
 router.patch('/submissions/:submissionId/review', validate(submissionReviewSchema), asyncHandler(merchantController.reviewSubmission));
 router.post('/reviews', validate(reviewCreateSchema), asyncHandler(merchantController.createReview));
 
-router.get('/notifications', asyncHandler(merchantController.listNotifications));
-
-router.get('/chats', asyncHandler(merchantController.listChats));
-router.get('/chats/:applicationId/messages', asyncHandler(merchantController.getChatMessages));
-router.post('/chats/:applicationId/messages', validate(messageSchema), asyncHandler(merchantController.sendChatMessage));
-router.post('/disputes', validate(disputeCreateSchema), asyncHandler(merchantController.openDispute));
-
 router.get('/products', asyncHandler(merchantController.listProducts));
 router.post('/products', asyncHandler(merchantController.createProduct));
 router.get('/products/:productId', asyncHandler(merchantController.getProduct));
 router.put('/products/:productId', asyncHandler(merchantController.updateProduct));
 router.delete('/products/:productId', asyncHandler(merchantController.deleteProduct));
-
-router.get('/vouchers/:code', asyncHandler(merchantController.getVoucherByCode));
-router.post('/vouchers/:code/redeem', asyncHandler(merchantController.redeemVoucher));
 
 export default router;

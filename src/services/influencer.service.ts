@@ -1,9 +1,9 @@
-import { NotificationType, Prisma } from '@prisma/client';
-import { prisma } from '../lib/prisma';
+import { many, one } from '../database/query';
+import { transaction } from '../database/transaction';
 import { AppError } from '../utils/app-error';
 import { toMeta } from '../utils/pagination';
 import { getFinanceSettings } from './settings.service';
-import { createNotification } from './notification.service';
+import * as publicService from './public.service';
 import {
   createCommerceAddress,
   createInfluencerCommerceOrder,
@@ -14,18 +14,181 @@ import {
   updateInfluencerMediaKit
 } from './commerce.service';
 
-const getInfluencerProfileOrThrow = async (userId: string) => {
-  const profile = await prisma.influencerProfile.findUnique({
-    where: { userId },
-    include: { pointsAccount: true, user: true }
-  });
-  if (!profile) {
-    throw new AppError('Influencer profile not found', 404);
-  }
-  return profile;
+type UserRow = {
+  id: string;
+  email: string;
+  phone: string | null;
+  display_name: string;
+  avatar_url: string | null;
+  bio: string | null;
+  instagram_url: string | null;
+  tiktok_url: string | null;
+  youtube_url: string | null;
+  follower_count: number;
+  verification_status: string;
+  proof_image_url: string | null;
+  created_at?: Date | string;
+  updated_at?: Date | string;
 };
 
-export const getInfluencerProfile = async (userId: string) => getInfluencerProfileOrThrow(userId);
+type MissionParticipantRow = {
+  id: string;
+  mission_id: string;
+  user_id: string;
+  proof_text: string | null;
+  proof_link: string | null;
+  proof_images: string | null;
+  platform: string | null;
+  submission_note: string | null;
+  reward_points: number;
+  rewarded_at: Date | string | null;
+  joined_at: Date | string;
+  submitted_at: Date | string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+  title?: string;
+  description?: string | null;
+  location?: string | null;
+  requirement?: string | null;
+  proof_requirement?: string | null;
+  reward_budget_amount?: number | string;
+  max_creators?: number;
+  joined_count?: number;
+  end_date?: Date | string | null;
+  category_id?: string | null;
+  category_name?: string | null;
+  merchant_id?: string;
+  merchant_company_name?: string | null;
+  merchant_logo_url?: string | null;
+};
+
+type WithdrawalRow = {
+  id: string;
+  user_id: string;
+  points: number;
+  myr_amount: number | string;
+  bank_name: string | null;
+  bank_account_name: string | null;
+  bank_account_no: string | null;
+  status: string;
+  admin_note: string | null;
+  requested_at: Date | string;
+  approved_at: Date | string | null;
+  paid_at: Date | string | null;
+  rejected_at: Date | string | null;
+};
+
+const toNumber = (value: number | string | null | undefined) => Number(value ?? 0);
+
+const parseTextList = (value: string | null | undefined) => {
+  if (!value) return [] as string[];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed.map((item) => String(item)).filter(Boolean);
+  } catch {
+    // ignore
+  }
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+const stringifyTextList = (value: string[] | undefined | null) => JSON.stringify((value ?? []).filter(Boolean));
+
+const parseChecklist = (value: string | null) =>
+  (value ?? '')
+    .split(/[;\n]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const getUserOrThrow = async (userId: string) => {
+  const row = await one<UserRow>(
+    `
+      select *
+      from users
+      where id = $1
+      limit 1
+    `,
+    [userId]
+  );
+  if (!row) throw new AppError('Influencer profile not found', 404);
+  return row;
+};
+
+const deriveSubmissionStatus = (participant: MissionParticipantRow) => {
+  if (participant.rewarded_at) return 'APPROVED';
+  if (participant.submitted_at) return 'PENDING';
+  return 'NOT_SUBMITTED';
+};
+
+const serializeMissionFromParticipant = (row: MissionParticipantRow) => ({
+  id: row.mission_id,
+  title: row.title ?? 'Mission',
+  description: row.description ?? '',
+  status: row.end_date && new Date(row.end_date).getTime() < Date.now() ? 'COMPLETED' : 'PUBLISHED',
+  deadline: row.end_date ? new Date(row.end_date).toISOString() : null,
+  quota: row.max_creators ?? 0,
+  location: row.location,
+  pricingMode: 'FIXED_BUDGET' as const,
+  commissionPoolAmount: null,
+  fixedBudgetAmount: toNumber(row.reward_budget_amount),
+  platformRequirements: parseChecklist(row.requirement ?? null),
+  deliverablesChecklist: parseChecklist(row.proof_requirement || row.requirement || null),
+  category: row.category_id ? { id: row.category_id, name: row.category_name ?? 'General' } : null,
+  merchantProfile: {
+    companyName: row.merchant_company_name ?? 'Merchant',
+    logoUrl: row.merchant_logo_url ?? null
+  },
+  _count: {
+    applications: row.joined_count ?? 0
+  },
+  rewardPoints: row.reward_points
+});
+
+const serializeApplication = (row: MissionParticipantRow) => ({
+  id: row.id,
+  missionId: row.mission_id,
+  status: 'ACCEPTED',
+  createdAt: new Date(row.joined_at).toISOString(),
+  mission: serializeMissionFromParticipant(row),
+  submission: row.submitted_at
+    ? {
+        status: deriveSubmissionStatus(row),
+        caption: row.proof_text,
+        links: row.proof_link ? [row.proof_link] : [],
+        proofImages: parseTextList(row.proof_images),
+        submittedAt: new Date(row.submitted_at).toISOString()
+      }
+    : null
+});
+
+const getAvailableBalancePoints = async (userId: string) => {
+  const [earnedRow, withdrawnRow] = await Promise.all([
+    one<{ total: string }>(
+      `
+        select coalesce(sum(reward_points), 0)::text as total
+        from mission_participants
+        where user_id = $1
+          and rewarded_at is not null
+      `,
+      [userId]
+    ),
+    one<{ total: string }>(
+      `
+        select coalesce(sum(points), 0)::text as total
+        from user_withdrawals
+        where user_id = $1
+          and status in ('PENDING', 'APPROVED', 'PAID')
+      `,
+      [userId]
+    )
+  ]);
+
+  return Number(earnedRow?.total ?? 0) - Number(withdrawnRow?.total ?? 0);
+};
+
+export const getInfluencerProfile = async (userId: string) => getUserOrThrow(userId);
 
 export const updateInfluencerProfile = async (
   userId: string,
@@ -37,67 +200,37 @@ export const updateInfluencerProfile = async (
     proofImageUrl?: string;
   }
 ) => {
-  const profile = await getInfluencerProfileOrThrow(userId);
-  const proofImage = payload.proofImageUrl ?? profile.proofImageUrl;
-  if (!proofImage) {
-    throw new AppError('Follower proof image is required', 422);
-  }
+  const current = await getUserOrThrow(userId);
+  const proofImageUrl = payload.proofImageUrl ?? current.proof_image_url;
+  if (!proofImageUrl) throw new AppError('Follower proof image is required', 422);
 
-  return prisma.influencerProfile.update({
-    where: { id: profile.id },
-    data: {
-      igLink: payload.igLink,
-      tiktokLink: payload.tiktokLink,
-      followerCount: payload.followerCount,
-      phone: payload.phone,
-      proofImageUrl: proofImage,
-      verificationStatus: 'PENDING'
-    }
-  });
+  const updated = await one<UserRow>(
+    `
+      update users
+      set
+        instagram_url = $2,
+        tiktok_url = $3,
+        follower_count = $4,
+        phone = $5,
+        proof_image_url = $6,
+        verification_status = 'PENDING',
+        updated_at = now()
+      where id = $1
+      returning *
+    `,
+    [userId, payload.igLink, payload.tiktokLink ?? null, payload.followerCount, payload.phone, proofImageUrl]
+  );
+
+  if (!updated) throw new AppError('Influencer profile not found', 404);
+  return updated;
 };
 
-export const requestPhoneOtp = async (phone: string) => {
-  const code = '123456';
-  await prisma.phoneOtp.create({
-    data: {
-      phone,
-      code,
-      expiresAt: new Date(Date.now() + 5 * 60 * 1000)
-    }
-  });
-
-  return { code, expiresInSeconds: 300 };
+export const requestPhoneOtp = async (_phone: string) => {
+  throw new AppError('OTP verification is not supported by the current database schema', 501);
 };
 
-export const verifyPhoneOtp = async (userId: string, phone: string, code: string) => {
-  const otp = await prisma.phoneOtp.findFirst({
-    where: {
-      phone,
-      code,
-      isUsed: false,
-      expiresAt: { gt: new Date() }
-    },
-    orderBy: { createdAt: 'desc' }
-  });
-
-  if (!otp) {
-    throw new AppError('Invalid OTP', 422);
-  }
-
-  const profile = await getInfluencerProfileOrThrow(userId);
-
-  await prisma.$transaction([
-    prisma.phoneOtp.update({ where: { id: otp.id }, data: { isUsed: true } }),
-    prisma.influencerProfile.update({
-      where: { id: profile.id },
-      data: {
-        phone,
-        phoneVerifiedAt: new Date()
-      }
-    })
-  ]);
-
-  return { verified: true };
+export const verifyPhoneOtp = async (_userId: string, _phone: string, _code: string) => {
+  throw new AppError('OTP verification is not supported by the current database schema', 501);
 };
 
 export const listDiscoverMissions = async (
@@ -113,145 +246,125 @@ export const listDiscoverMissions = async (
     deadlineBefore?: string;
   }
 ) => {
-  const where: Prisma.MissionWhereInput = {
-    status: { in: ['PUBLISHED', 'IN_PROGRESS'] },
-    deadline: {
-      gte: new Date(),
-      ...(query.deadlineBefore ? { lte: new Date(query.deadlineBefore) } : {})
-    },
-    ...(query.categoryId ? { categoryId: query.categoryId } : {}),
-    ...(query.search
-      ? {
-          OR: [
-            { title: { contains: query.search, mode: 'insensitive' } },
-            { description: { contains: query.search, mode: 'insensitive' } }
-          ]
-        }
-      : {}),
-    ...(query.platform
-      ? {
-          platformRequirements: {
-            array_contains: [query.platform]
-          }
-        }
-      : {}),
-    ...(query.location
-      ? {
-          location: {
-            contains: query.location,
-            mode: 'insensitive'
-          }
-        }
-      : {})
-  };
-
-  const [rawItems, total] = await Promise.all([
-    prisma.mission.findMany({
-      where,
-      include: {
-        category: true,
-        merchantProfile: {
-          select: {
-            companyName: true
-          }
-        },
-        _count: {
-          select: {
-            applications: true
-          }
-        }
-      },
-      orderBy: { createdAt: 'desc' },
-      skip: (query.page - 1) * query.pageSize,
-      take: query.pageSize
-    }),
-    prisma.mission.count({ where })
-  ]);
-
-  const items = rawItems.filter((mission) => {
-    const budget = mission.pricingMode === 'COMMISSION_POOL' ? Number(mission.commissionPoolAmount ?? 0) : Number(mission.fixedBudgetAmount ?? 0);
-    const payout = budget / mission.quota;
+  const result = await publicService.listPublishedMissions(query);
+  const items = result.items.filter((mission) => {
+    const payout = mission.quota > 0 ? mission.fixedBudgetAmount / mission.quota : 0;
     if (query.minPayout && payout < query.minPayout) return false;
     if (query.maxPayout && payout > query.maxPayout) return false;
+    if (query.deadlineBefore && mission.deadline && new Date(mission.deadline).getTime() > new Date(query.deadlineBefore).getTime()) return false;
     return true;
   });
 
   return {
     items,
-    meta: toMeta(query.page, query.pageSize, total)
+    meta: result.meta
   };
 };
 
 export const applyMission = async (userId: string, missionId: string) => {
-  const profile = await getInfluencerProfileOrThrow(userId);
-  if (profile.verificationStatus !== 'APPROVED') {
+  const user = await getUserOrThrow(userId);
+  if (user.verification_status !== 'VERIFIED') {
     throw new AppError('Verification must be approved before applying missions', 422);
   }
 
-  const mission = await prisma.mission.findUnique({
-    where: { id: missionId },
-    include: { merchantProfile: true }
+  const mission = await one<{
+    id: string;
+    max_creators: number;
+    joined_count: number;
+    end_date: Date | string | null;
+  }>(
+    `
+      select id, max_creators, joined_count, end_date
+      from missions
+      where id = $1
+      limit 1
+    `,
+    [missionId]
+  );
+
+  if (!mission) throw new AppError('Mission is not available', 404);
+  if (mission.end_date && new Date(mission.end_date).getTime() < Date.now()) throw new AppError('Mission is not available', 404);
+  if (mission.joined_count >= mission.max_creators) throw new AppError('Mission quota is full', 422);
+
+  const existing = await one<{ id: string }>(
+    `
+      select id
+      from mission_participants
+      where mission_id = $1 and user_id = $2
+      limit 1
+    `,
+    [missionId, userId]
+  );
+  if (existing) throw new AppError('Mission already joined', 409);
+
+  const participant = await transaction(async (client) => {
+    const created = await one<MissionParticipantRow>(
+      `
+        insert into mission_participants (mission_id, user_id, joined_at, created_at, updated_at)
+        values ($1, $2, now(), now(), now())
+        returning *
+      `,
+      [missionId, userId],
+      client
+    );
+
+    await one(
+      `
+        update missions
+        set joined_count = joined_count + 1, updated_at = now()
+        where id = $1
+        returning id
+      `,
+      [missionId],
+      client
+    );
+
+    return created;
   });
 
-  if (!mission || !['PUBLISHED', 'IN_PROGRESS'].includes(mission.status)) {
-    throw new AppError('Mission is not available', 404);
-  }
-
-  const acceptedCount = await prisma.missionApplication.count({
-    where: {
-      missionId,
-      status: 'ACCEPTED'
-    }
-  });
-
-  if (acceptedCount >= mission.quota) {
-    throw new AppError('Mission quota is full', 422);
-  }
-
-  const application = await prisma.missionApplication.create({
-    data: {
-      missionId,
-      influencerId: profile.id,
-      status: 'APPLIED'
-    }
-  });
-
-  await createNotification({
-    userId: mission.merchantProfile.userId,
-    type: NotificationType.APPLICATION,
-    title: 'New mission application',
-    message: `A new influencer applied to ${mission.title}`,
-    metadata: { missionId, applicationId: application.id }
-  });
-
-  return application;
+  return participant;
 };
 
 export const listInfluencerApplications = async (userId: string, page: number, pageSize: number) => {
-  const profile = await getInfluencerProfileOrThrow(userId);
-  const where = { influencerId: profile.id };
-
-  const [items, total] = await Promise.all([
-    prisma.missionApplication.findMany({
-      where,
-      include: {
-        mission: {
-          include: {
-            category: true
-          }
-        },
-        submission: true
-      },
-      orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * pageSize,
-      take: pageSize
-    }),
-    prisma.missionApplication.count({ where })
-  ]);
+  await getUserOrThrow(userId);
+  const offset = (page - 1) * pageSize;
+  const rows = await many<MissionParticipantRow>(
+    `
+      select
+        mp.*,
+        m.title,
+        m.description,
+        m.location,
+        m.requirement,
+        m.proof_requirement,
+        m.budget_amount as reward_budget_amount,
+        m.max_creators,
+        m.joined_count,
+        m.end_date,
+        m.category_id,
+        c.name as category_name,
+        m.merchant_id,
+        merchant.company_name as merchant_company_name,
+        merchant.logo_url as merchant_logo_url
+      from mission_participants mp
+      join missions m on m.id = mp.mission_id
+      left join categories c on c.id = m.category_id
+      join merchants merchant on merchant.id = m.merchant_id
+      where mp.user_id = $1
+      order by mp.joined_at desc
+      offset $2
+      limit $3
+    `,
+    [userId, offset, pageSize]
+  );
+  const totalRow = await one<{ count: string }>(
+    `select count(*)::text as count from mission_participants where user_id = $1`,
+    [userId]
+  );
 
   return {
-    items,
-    meta: toMeta(page, pageSize, total)
+    items: rows.map(serializeApplication),
+    meta: toMeta(page, pageSize, Number(totalRow?.count ?? 0))
   };
 };
 
@@ -261,287 +374,170 @@ export const submitMissionProof = async (
     applicationId: string;
     caption: string;
     links: string[];
-    proofImages: string[];
+    proofImages?: string[];
   }
 ) => {
-  const profile = await getInfluencerProfileOrThrow(userId);
+  const participant = await one<MissionParticipantRow>(
+    `
+      select *
+      from mission_participants
+      where id = $1 and user_id = $2
+      limit 1
+    `,
+    [payload.applicationId, userId]
+  );
+  if (!participant) throw new AppError('Mission application not found', 404);
 
-  const application = await prisma.missionApplication.findUnique({
-    where: { id: payload.applicationId },
-    include: {
-      mission: {
-        include: { merchantProfile: true }
-      },
-      submission: true
-    }
-  });
+  const updated = await one<MissionParticipantRow>(
+    `
+      update mission_participants
+      set
+        proof_text = $3,
+        proof_link = $4,
+        proof_images = $5,
+        submitted_at = now(),
+        updated_at = now()
+      where id = $1 and user_id = $2
+      returning *
+    `,
+    [
+      payload.applicationId,
+      userId,
+      payload.caption,
+      payload.links[0] ?? null,
+      stringifyTextList(payload.proofImages)
+    ]
+  );
 
-  if (!application || application.influencerId !== profile.id) {
-    throw new AppError('Application not found', 404);
-  }
-
-  if (application.status !== 'ACCEPTED') {
-    throw new AppError('Application is not accepted', 422);
-  }
-
-  const data = {
-    missionId: application.missionId,
-    applicationId: application.id,
-    influencerId: profile.id,
-    caption: payload.caption,
-    proofLinks: payload.links as any,
-    proofImages: payload.proofImages as any,
-    status: 'SUBMITTED' as const,
-    reviewNote: null
+  if (!updated) throw new AppError('Mission application not found', 404);
+  return {
+    id: updated.id,
+    status: deriveSubmissionStatus(updated),
+    caption: updated.proof_text,
+    links: updated.proof_link ? [updated.proof_link] : [],
+    proofImages: parseTextList(updated.proof_images),
+    submittedAt: updated.submitted_at ? new Date(updated.submitted_at).toISOString() : null
   };
-
-  const submission = application.submission
-    ? await prisma.missionSubmission.update({
-        where: { applicationId: application.id },
-        data
-      })
-    : await prisma.missionSubmission.create({ data });
-
-  await createNotification({
-    userId: application.mission.merchantProfile.userId,
-    type: NotificationType.SUBMISSION,
-    title: 'Mission proof submitted',
-    message: `Submission received for ${application.mission.title}`,
-    metadata: { missionId: application.missionId, submissionId: submission.id }
-  });
-
-  return submission;
 };
 
 export const getEarningsSummary = async (userId: string, page: number, pageSize: number) => {
-  const profile = await getInfluencerProfileOrThrow(userId);
-  if (!profile.pointsAccount) {
-    throw new AppError('Points account not found', 404);
-  }
+  await getUserOrThrow(userId);
+  const finance = await getFinanceSettings();
+  const balancePoints = await getAvailableBalancePoints(userId);
+  const lifetimeEarnedRow = await one<{ total: string }>(
+    `
+      select coalesce(sum(reward_points), 0)::text as total
+      from mission_participants
+      where user_id = $1 and rewarded_at is not null
+    `,
+    [userId]
+  );
 
-  const where = { pointsAccountId: profile.pointsAccount.id };
-  const settings = await getFinanceSettings();
-  const [items, total] = await Promise.all([
-    prisma.pointsLedger.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * pageSize,
-      take: pageSize
-    }),
-    prisma.pointsLedger.count({ where })
-  ]);
+  const missionLedger = await many<{
+    id: string;
+    created_at: Date | string;
+    reward_points: number;
+    title: string;
+  }>(
+    `
+      select mp.id, mp.rewarded_at as created_at, mp.reward_points, m.title
+      from mission_participants mp
+      join missions m on m.id = mp.mission_id
+      where mp.user_id = $1 and mp.rewarded_at is not null
+      order by mp.rewarded_at desc
+    `,
+    [userId]
+  );
+
+  const ledgerItems = missionLedger.slice((page - 1) * pageSize, page * pageSize).map((item) => ({
+    id: item.id,
+    type: 'MISSION_EARNING',
+    points: item.reward_points,
+    notes: `Reward for ${item.title}`,
+    createdAt: new Date(item.created_at).toISOString()
+  }));
 
   return {
-    balancePoints: profile.pointsAccount.balancePoints,
-    estimatedMyr: Number((profile.pointsAccount.balancePoints * settings.pointsToMyrRate).toFixed(2)),
+    balancePoints,
+    lifetimeEarnedPoints: Number(lifetimeEarnedRow?.total ?? 0),
+    estimatedMyr: Number((balancePoints * finance.pointsToMyrRate).toFixed(2)),
     ledger: {
-      items,
-      meta: toMeta(page, pageSize, total)
+      items: ledgerItems,
+      total: missionLedger.length,
+      page,
+      pageSize
     }
   };
 };
 
 export const requestWithdrawal = async (userId: string, points: number) => {
-  const profile = await getInfluencerProfileOrThrow(userId);
-  const settings = await getFinanceSettings();
-  if (!profile.pointsAccount) {
-    throw new AppError('Points account not found', 404);
-  }
+  await getUserOrThrow(userId);
+  const finance = await getFinanceSettings();
+  const balancePoints = await getAvailableBalancePoints(userId);
+  if (points > balancePoints) throw new AppError('Insufficient points balance', 422);
 
-  if (profile.pointsAccount.balancePoints < points) {
-    throw new AppError('Insufficient points balance', 422);
-  }
-
-  const amountMYR = Number((points * settings.pointsToMyrRate).toFixed(2));
-  if (amountMYR < settings.minWithdrawalMyr) {
-    throw new AppError(`Minimum withdrawal is RM ${settings.minWithdrawalMyr}`, 422);
-  }
-
-  return prisma.$transaction(async (tx) => {
-    await tx.pointsAccount.update({
-      where: { id: profile.pointsAccount!.id },
-      data: { balancePoints: { decrement: points } }
-    });
-
-    await tx.pointsLedger.create({
-      data: {
-        pointsAccountId: profile.pointsAccount!.id,
-        points: -points,
-        type: 'WITHDRAWAL_DEBIT',
-        reference: `WDR-${Date.now()}`,
-        notes: 'Withdrawal request'
-      }
-    });
-
-    const withdrawal = await tx.withdrawal.create({
-      data: {
-        influencerId: profile.id,
-        pointsUsed: points,
-        amountMYR,
-        status: 'PENDING'
-      }
-    });
-
-    return withdrawal;
-  });
+  const myrAmount = Number((points * finance.pointsToMyrRate).toFixed(2));
+  const row = await one<WithdrawalRow>(
+    `
+      insert into user_withdrawals (
+        user_id,
+        points,
+        myr_amount,
+        bank_name,
+        bank_account_name,
+        bank_account_no,
+        status,
+        requested_at
+      )
+      values ($1, $2, $3, '', '', '', 'PENDING', now())
+      returning *
+    `,
+    [userId, points, myrAmount]
+  );
+  if (!row) throw new AppError('Failed to create withdrawal', 500);
+  return row;
 };
 
 export const listWithdrawals = async (userId: string, page: number, pageSize: number) => {
-  const profile = await getInfluencerProfileOrThrow(userId);
-  const where = { influencerId: profile.id };
-
-  const [items, total] = await Promise.all([
-    prisma.withdrawal.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * pageSize,
-      take: pageSize
-    }),
-    prisma.withdrawal.count({ where })
-  ]);
-
+  await getUserOrThrow(userId);
+  const offset = (page - 1) * pageSize;
+  const rows = await many<WithdrawalRow>(
+    `
+      select *
+      from user_withdrawals
+      where user_id = $1
+      order by requested_at desc
+      offset $2
+      limit $3
+    `,
+    [userId, offset, pageSize]
+  );
+  const totalRow = await one<{ count: string }>(`select count(*)::text as count from user_withdrawals where user_id = $1`, [userId]);
   return {
-    items,
-    meta: toMeta(page, pageSize, total)
+    items: rows,
+    meta: toMeta(page, pageSize, Number(totalRow?.count ?? 0))
   };
 };
 
-export const listInfluencerNotifications = async (userId: string, page: number, pageSize: number) => {
-  const where = { userId };
-  const [items, total] = await Promise.all([
-    prisma.notification.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * pageSize,
-      take: pageSize
-    }),
-    prisma.notification.count({ where })
-  ]);
+export const listInfluencerNotifications = async (_userId: string, page: number, pageSize: number) => ({
+  items: [],
+  meta: toMeta(page, pageSize, 0)
+});
 
-  return { items, meta: toMeta(page, pageSize, total) };
+export const openDispute = async (_userId: string, _payload: { applicationId: string; reason: string; details: string }) => {
+  throw new AppError('Disputes are not supported by the current database schema', 501);
 };
 
-export const openDispute = async (userId: string, payload: { applicationId: string; reason: string; details: string }) => {
-  const profile = await getInfluencerProfileOrThrow(userId);
+export const listMyChats = async () => [];
 
-  const application = await prisma.missionApplication.findUnique({
-    where: { id: payload.applicationId },
-    include: {
-      mission: true
-    }
-  });
+export const getChatMessages = async (_userId: string, _applicationId: string, page: number, pageSize: number) => ({
+  chat: null,
+  items: [],
+  meta: toMeta(page, pageSize, 0)
+});
 
-  if (!application || application.influencerId !== profile.id) {
-    throw new AppError('Application not found', 404);
-  }
-
-  return prisma.dispute.create({
-    data: {
-      missionId: application.missionId,
-      applicationId: application.id,
-      openedById: userId,
-      reason: payload.reason,
-      details: payload.details
-    }
-  });
-};
-
-export const listMyChats = async (userId: string) => {
-  const profile = await getInfluencerProfileOrThrow(userId);
-  return prisma.chat.findMany({
-    where: { influencerId: profile.id },
-    include: {
-      mission: { select: { title: true } },
-      messages: {
-        orderBy: { createdAt: 'desc' },
-        take: 1,
-        include: { sender: { select: { email: true } } }
-      }
-    },
-    orderBy: { updatedAt: 'desc' }
-  });
-};
-
-export const getChatMessages = async (userId: string, applicationId: string, page: number, pageSize: number) => {
-  const profile = await getInfluencerProfileOrThrow(userId);
-  const chat = await prisma.chat.findUnique({
-    where: { applicationId },
-    include: {
-      mission: true
-    }
-  });
-
-  if (!chat || chat.influencerId !== profile.id) {
-    throw new AppError('Chat not found', 404);
-  }
-
-  const where = { chatId: chat.id };
-  const [items, total] = await Promise.all([
-    prisma.chatMessage.findMany({
-      where,
-      include: {
-        sender: {
-          select: {
-            id: true,
-            email: true,
-            role: true
-          }
-        }
-      },
-      orderBy: { createdAt: 'desc' },
-      skip: (page - 1) * pageSize,
-      take: pageSize
-    }),
-    prisma.chatMessage.count({ where })
-  ]);
-
-  return {
-    chat,
-    items: items.reverse(),
-    meta: toMeta(page, pageSize, total)
-  };
-};
-
-export const sendChatMessage = async (userId: string, applicationId: string, content: string) => {
-  const profile = await getInfluencerProfileOrThrow(userId);
-
-  const chat = await prisma.chat.findUnique({
-    where: { applicationId },
-    include: {
-      mission: {
-        include: {
-          merchantProfile: true
-        }
-      }
-    }
-  });
-
-  if (!chat || chat.influencerId !== profile.id) {
-    throw new AppError('Chat not found', 404);
-  }
-
-  const message = await prisma.chatMessage.create({
-    data: {
-      chatId: chat.id,
-      senderId: userId,
-      content
-    },
-    include: {
-      sender: { select: { id: true, email: true, role: true } }
-    }
-  });
-
-  await prisma.chat.update({ where: { id: chat.id }, data: { updatedAt: new Date() } });
-
-  await createNotification({
-    userId: chat.mission.merchantProfile.userId,
-    type: NotificationType.SYSTEM,
-    title: 'New chat message',
-    message: `New message on mission ${chat.mission.title}`,
-    metadata: { applicationId, chatId: chat.id }
-  });
-
-  return message;
+export const sendChatMessage = async () => {
+  throw new AppError('Chats are not supported by the current database schema', 501);
 };
 
 export const getCommerceState = async (userId: string) => getInfluencerCommerceState(userId);
@@ -568,9 +564,17 @@ export const createCommerceOrder = async (
   userId: string,
   payload: {
     productItems: Array<{ productId: string; quantity: number }>;
-    addressId: string;
+    addressId?: string;
     note?: string;
-    source?: 'AFFILIATE_LINK' | 'SELF_PURCHASE';
+    source?: string;
+    receiverName?: string;
+    receiverPhone?: string;
+    addressLine1?: string;
+    addressLine2?: string;
+    city?: string;
+    state?: string;
+    postcode?: string;
+    country?: string;
   }
 ) => createInfluencerCommerceOrder(userId, payload);
 
@@ -578,11 +582,5 @@ export const getMediaKit = async (userId: string) => getInfluencerMediaKit(userI
 
 export const saveMediaKit = async (userId: string, payload: Record<string, unknown>) => updateInfluencerMediaKit(userId, payload);
 
-export const saveCommercePreferences = async (
-  userId: string,
-  payload: Partial<{
-    orderUpdates: boolean;
-    promoAlerts: boolean;
-    rememberCheckoutAddress: boolean;
-  }>
-) => updateCommercePreferences(userId, payload);
+export const saveCommercePreferences = async (userId: string, payload: Partial<{ orderUpdates: boolean; promoAlerts: boolean; rememberCheckoutAddress: boolean }>) =>
+  updateCommercePreferences(userId, payload);

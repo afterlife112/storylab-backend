@@ -1,4 +1,4 @@
-import { WithdrawalStatus } from '@prisma/client';
+import { WithdrawalStatuses } from '../constants/enums';
 import { z } from 'zod';
 
 export const influencerProfileSchema = z.object({
@@ -21,11 +21,11 @@ export const otpVerifySchema = z.object({
 });
 
 export const missionApplySchema = z.object({
-  missionId: z.string().cuid()
+  missionId: z.string().uuid()
 });
 
 export const missionSubmissionSchema = z.object({
-  applicationId: z.string().cuid(),
+  applicationId: z.string().uuid(),
   links: z.array(z.string().url()).min(1),
   caption: z.string().min(3)
 });
@@ -35,13 +35,18 @@ export const withdrawalCreateSchema = z.object({
 });
 
 export const disputeCreateSchema = z.object({
-  applicationId: z.string().cuid(),
+  applicationId: z.string().uuid(),
   reason: z.string().min(3),
   details: z.string().min(5)
 });
 
 export const withdrawalStatusSchema = z.object({
-  status: z.nativeEnum(WithdrawalStatus),
+  status: z.enum([
+    WithdrawalStatuses.PENDING,
+    WithdrawalStatuses.APPROVED,
+    WithdrawalStatuses.PAID,
+    WithdrawalStatuses.REJECTED
+  ]),
   payoutRef: z.string().optional(),
   adminNotes: z.string().optional()
 });

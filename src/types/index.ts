@@ -1,5 +1,5 @@
 import { Request } from 'express';
-import { Role } from '@prisma/client';
+import { Role } from '../constants/enums';
 
 export type AuthUser = {
   id: string;

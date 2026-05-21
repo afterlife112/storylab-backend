@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { env } from '../config/env';
+import { AppError } from '../utils/app-error';
 
 export type TopupIntent = {
   paymentUrl: string;
@@ -12,18 +13,11 @@ export interface RevenueMonsterAdapter {
   verifyWebhookSignature(rawBody: string, signature?: string): boolean;
 }
 
-export class MockRevenueMonsterAdapter implements RevenueMonsterAdapter {
-  async createTopupIntent(amount: number, merchantId: string): Promise<TopupIntent> {
-    const referenceId = `RM-${merchantId.slice(0, 6)}-${Date.now()}`;
-    return {
-      referenceId,
-      paymentUrl: `${env.APP_BASE_URL}/dev/mock-pay/${referenceId}`,
-      providerPayload: {
-        provider: 'MOCK_REVENUE_MONSTER',
-        amount,
-        merchantId
-      }
-    };
+class RevenueMonsterNotConfiguredAdapter implements RevenueMonsterAdapter {
+  async createTopupIntent(): Promise<TopupIntent> {
+    throw new AppError('Revenue Monster adapter is not configured', 501, {
+      code: 'REVENUE_MONSTER_NOT_CONFIGURED'
+    });
   }
 
   verifyWebhookSignature(rawBody: string, signature?: string): boolean {
@@ -36,4 +30,4 @@ export class MockRevenueMonsterAdapter implements RevenueMonsterAdapter {
   }
 }
 
-export const revenueMonsterAdapter: RevenueMonsterAdapter = new MockRevenueMonsterAdapter();
+export const revenueMonsterAdapter: RevenueMonsterAdapter = new RevenueMonsterNotConfiguredAdapter();

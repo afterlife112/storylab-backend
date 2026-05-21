@@ -1,4 +1,4 @@
-import { MissionStatus, PricingMode } from '@prisma/client';
+import { MissionStatuses, PricingModes } from '../constants/enums';
 import { z } from 'zod';
 
 export const merchantProfileSchema = z.object({
@@ -12,7 +12,7 @@ export const merchantProfileSchema = z.object({
 });
 
 export const createMissionSchema = z.object({
-  categoryId: z.string().cuid(),
+  categoryId: z.string().uuid(),
   title: z.string().min(3),
   description: z.string().min(10),
   platformRequirements: z.array(z.enum(['IG', 'TikTok', 'FB'])).min(1),
@@ -20,15 +20,22 @@ export const createMissionSchema = z.object({
   location: z.string().optional().nullable(),
   deadline: z.string().datetime(),
   quota: z.number().int().positive(),
-  pricingMode: z.nativeEnum(PricingMode),
+  pricingMode: z.enum([PricingModes.FIXED_BUDGET, PricingModes.COMMISSION_POOL]),
   commissionPoolAmount: z.number().positive().optional(),
-  fixedBudgetAmount: z.number().positive().optional()
+  fixedBudgetAmount: z.number().positive().optional(),
+  aiKocEnabled: z.boolean().optional()
 });
 
 export const updateMissionSchema = createMissionSchema;
 
 export const missionStatusSchema = z.object({
-  status: z.nativeEnum(MissionStatus),
+  status: z.enum([
+    MissionStatuses.DRAFT,
+    MissionStatuses.PUBLISHED,
+    MissionStatuses.PAUSED,
+    MissionStatuses.COMPLETED,
+    MissionStatuses.CANCELLED
+  ]),
   reason: z.string().optional()
 });
 
@@ -46,9 +53,9 @@ export const submissionReviewSchema = z.object({
 });
 
 export const reviewCreateSchema = z.object({
-  missionId: z.string().cuid(),
-  submissionId: z.string().cuid(),
-  influencerId: z.string().cuid(),
+  missionId: z.string().uuid(),
+  submissionId: z.string().uuid(),
+  influencerId: z.string().uuid(),
   star: z.number().int().min(1).max(5),
   comment: z.string().min(2)
 });

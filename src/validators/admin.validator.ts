@@ -1,4 +1,4 @@
-import { VerificationStatus } from '@prisma/client';
+import { VerificationStatuses } from '../constants/enums';
 import { z } from 'zod';
 
 export const categorySchema = z.object({
@@ -8,11 +8,16 @@ export const categorySchema = z.object({
 });
 
 export const categoryReorderSchema = z.object({
-  order: z.array(z.object({ id: z.string().cuid(), sortOrder: z.number().int().nonnegative() })).min(1)
+  order: z.array(z.object({ id: z.string().uuid(), sortOrder: z.number().int().nonnegative() })).min(1)
 });
 
 export const verificationDecisionSchema = z.object({
-  status: z.nativeEnum(VerificationStatus),
+  status: z.enum([
+    VerificationStatuses.UNVERIFIED,
+    VerificationStatuses.PENDING,
+    VerificationStatuses.VERIFIED,
+    VerificationStatuses.REJECTED
+  ]),
   notes: z.string().min(2)
 });
 

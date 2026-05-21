@@ -14,7 +14,10 @@ import influencerRoutes from './routes/influencer.routes';
 import adminRoutes from './routes/admin.routes';
 import publicRoutes from './routes/public.routes';
 import webhookRoutes from './routes/webhook.routes';
-import devRoutes from './routes/dev.routes';
+
+const configuredOrigins = [env.FRONTEND_MERCHANT_ORIGIN, env.FRONTEND_USER_ORIGIN, env.FRONTEND_ADMIN_ORIGIN];
+
+const localDevOriginPattern = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 
 export const buildApp = () => {
   process.env.TZ = env.TIMEZONE;
@@ -22,7 +25,19 @@ export const buildApp = () => {
 
   app.use(
     cors({
-      origin: [env.FRONTEND_MERCHANT_ORIGIN, env.FRONTEND_USER_ORIGIN, env.FRONTEND_ADMIN_ORIGIN],
+      origin: (origin, callback) => {
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+
+        if (configuredOrigins.includes(origin) || (env.NODE_ENV === 'development' && localDevOriginPattern.test(origin))) {
+          callback(null, true);
+          return;
+        }
+
+        callback(new Error(`CORS blocked for origin: ${origin}`));
+      },
       credentials: true
     })
   );
@@ -50,11 +65,9 @@ export const buildApp = () => {
   app.use('/influencer', influencerRoutes);
   app.use('/admin', adminRoutes);
   app.use('/webhooks', webhookRoutes);
-  app.use('/dev', devRoutes);
 
   app.use(notFound);
   app.use(errorHandler);
 
   return app;
 };
-
